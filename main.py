@@ -48,14 +48,15 @@ load_dotenv()
 # 🔧 Configuration
 # -------------------------
 
-# Environment Variables with secure defaults for PythonAnywhere
-COHERE_API_KEY = os.getenv("COHERE_API_KEY", "VS5BhKslAOlQJ4ZSHwGwm87l4wum9dOi2NIQZg02")
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://qvqbhoptpecvflidiqik.supabase.co/")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF2cWJob3B0cGVjdmZsaWRpcWlrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NDU5NTgxNSwiZXhwIjoyMDcwMTcxODE1fQ.PagGgXS09wDLDB6VeCn6E2z6LKyuIYK0bqC6Nx_P_2E")
-JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-jwt-key-change-me-in-production")
+# Environment Variables - No hardcoded defaults for security
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+JWT_SECRET = os.getenv("JWT_SECRET")
 
-# PythonAnywhere specific configurations
+# Platform specific configurations
 IS_PYTHONANYWHERE = os.getenv("PYTHONANYWHERE_SITE", "").startswith("www.pythonanywhere.com")
+IS_RENDER = os.getenv("RENDER", "False").lower() == "true"
 DEBUG_MODE = os.getenv("DEBUG", "False").lower() == "true"
 
 # Set Cohere API key in environment
@@ -79,8 +80,17 @@ app = FastAPI(
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:8080",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:3000",
+    "file://",  # Allow local file access
+    "null",     # Allow local file access
     "https://your-flutter-app-domain.com",  # Replace with your actual domain
 ]
+
+# For local development and Render, allow all origins
+if not IS_PYTHONANYWHERE or IS_RENDER:
+    allowed_origins = ["*"]
 
 if DEBUG_MODE:
     allowed_origins.append("*")
@@ -88,7 +98,7 @@ if DEBUG_MODE:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=False if not IS_PYTHONANYWHERE else True,  # Disable credentials for local dev
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
@@ -233,15 +243,14 @@ def initialize_ai():
         llm = ChatCohere(model="command-r-plus", temperature=0)
         
         emotion_prompt = PromptTemplate.from_template("""
-        You are an expert emotion classifier. Analyze the message and respond with exactly one word.
-        
-        If the message is completely neutral with no emotional tone: respond with "neutral"
-        Otherwise, choose the closest match from: joy, sadness, anger, fear, disgust
-        
-        Message: {message}
-        
-        Respond with one word only: joy, sadness, anger, fear, disgust, or neutral.
-        """)
+You are an expert emotion classifier. Take a look at the message, If the message is completely neutral and has no emotional tone at all,
+respond with: No Emotion.
+Else if the emotion is unclear but has any emotional undertone, choose the closest match out of exactly one of these:
+joy, sadness, anger, fear, disgust.
+Message: {message}
+
+Respond with one word only: joy, sadness, anger, fear, disgust, or No Emotion.
+""")
 
         response_prompt = PromptTemplate.from_template("""
         You are a warm, deeply empathetic assistant who truly listens to the user as a compassionate human friend. 
@@ -496,7 +505,7 @@ async def root():
             "status": "healthy",
             "ai_available": AI_AVAILABLE,
             "database_connected": supabase is not None,
-            "environment": "production" if IS_PYTHONANYWHERE else "development"
+            "environment": "production" if (IS_PYTHONANYWHERE or IS_RENDER) else "development"
         }
     )
 
@@ -508,7 +517,7 @@ async def health_check():
         "database_connected": supabase is not None,
         "ai_available": AI_AVAILABLE,
         "timestamp": datetime.utcnow().isoformat(),
-        "environment": "production" if IS_PYTHONANYWHERE else "development"
+        "environment": "production" if (IS_PYTHONANYWHERE or IS_RENDER) else "development"
     }
     
     # Test database connection
@@ -809,6 +818,29 @@ async def add_mood_entry(mood_data: MoodEntry, current_user: dict = Depends(get_
             message="Failed to add mood entry",
             error="Unable to save mood entry"
         )
+
+@app.get("/test")
+async def test_page():
+    """Serve the test HTML page"""
+    try:
+        with open("test_api.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Test page not found")
+
+@app.post("/test-chat")
+async def test_chat_endpoint(req: ChatRequest):
+    """Test chat endpoint without authentication"""
+    return ApiResponse(
+        success=True,
+        message="Test chat endpoint working",
+        data={
+            "message": req.message,
+            "test": "This endpoint works without auth"
+        }
+    )
 
 @app.get("/profile", response_model=ApiResponse)
 async def get_profile(current_user: dict = Depends(get_current_user)):
